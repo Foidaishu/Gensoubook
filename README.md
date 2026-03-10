@@ -7,12 +7,13 @@
 ![PyQt6](https://img.shields.io/badge/PyQt6-6.6+-green?style=flat-square)
 ![Status](https://img.shields.io/badge/Status-In%20Development-orange?style=flat-square)
 ![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey?style=flat-square)
+![Version](https://img.shields.io/badge/Version-v0.2-purple?style=flat-square)
 
 ---
 
 ## 📸 Preview
 
-> v0.1 — App shell, text editor, and drawing canvas
+> v0.2 — Bug fixes: focus mode, unsaved state, star/tag system, whiteboard zoom & pan
 
 ![Gensoubook Preview](preview.png)
 
@@ -41,90 +42,106 @@ Your `.exe` will appear in the `dist/` folder.
 
 ---
 
-## ✅ What's Working (v0.1)
+## 📋 Changelog
 
-### App Shell
-- [x] First-launch workspace picker — choose any folder on your machine
-- [x] Workspace is remembered between sessions
-- [x] Dark theme with purple accent
-- [x] Window title updates with current note name
-- [x] Auto-save every 4 seconds
+### v0.2 — Bug Fix Release
+> Released: March 2026
 
-### Sidebar
-- [x] File tree that reads real folders and `.note` files from disk
-- [x] Create new notes with template picker (Blank, Journal, Meeting, Whiteboard, Table)
-- [x] Create new folders
-- [x] Right-click context menu (open, new note here, new subfolder, delete)
-- [x] Move notes/folders to trash (soft delete — not permanent)
-- [x] Live search across all note content
-- [x] Double-click to open a note
+#### 🐛 Bugs Fixed
+| # | Bug | Fix |
+|---|-----|-----|
+| 1 | Clicking "✕ Exit Focus" button did nothing | Fixed state conflict in `_toggle_focus` — flag is now set inside enter/exit methods, not before |
+| 2 | Freshly opened note immediately showed "Unsaved" | `set_content()` now blocks signals during `setPlainText` to prevent spurious `textChanged` firing |
+| 3 | Word count showed ~2× the actual count on first open | Same root cause as #2 — word count timer now triggered once manually after load, cleanly |
+| 4 | No way to star or tag a note | Right-click context menu now has ⭐ Add to Favorites, 🏷️ Add Tag, ✕ Remove Tag, and ✏️ Rename |
+| 5 | Inline code `` ` `` button was invisible in the formatting bar | Label changed to `` `cd` `` with explicit minimum width so it renders visibly |
+| 6 | Whiteboard canvas was fixed-size with no zoom or pan | Full transform system added — scroll to zoom, middle-mouse or Space+drag to pan, toolbar zoom controls |
 
-### Text Editor
-- [x] Plain text / Markdown editing
-- [x] Formatting toolbar (Bold, Italic, Strikethrough, H1–H3, Bullet, Numbered, Todo, Code, Divider)
-- [x] Word and character count (live)
-- [x] Focus mode (hides toolbar and sidebar chrome)
-- [x] Unsaved indicator
-- [x] Auto-save
-
-### Drawing Canvas
-- [x] Pen, Highlighter, Marker, Eraser tools
-- [x] Shape tools: Rectangle, Ellipse, Line, Arrow
-- [x] Color picker
-- [x] Brush size slider
-- [x] Undo / Redo
-- [x] Clear canvas
-- [x] Export canvas as PNG
-
-### File Formats
-- [x] `.note` — JSON format storing text blocks and metadata
-- [x] `.board` — JSON format for whiteboard objects (canvas state)
-- [x] Templates: Blank, Daily Journal, Meeting Notes, Whiteboard, Table Note
+#### ✨ Bonus Addition (v0.2)
+- **✏️ Rename note** — available in right-click context menu, pre-fills current title
 
 ---
 
-## 🔧 Known Bugs (v0.1)
+### v0.1 — Initial Release
+> Released: March 2026
 
-Found and documented through real usage testing.
+#### ✅ What Shipped
 
-| # | Bug | Status |
-|---|-----|--------|
-| 1 | Whiteboard template crashes on open | 🔴 Open |
-| 2 | Clicking a folder shows all notes at root level instead of isolating folder contents | 🔴 Open |
-| 3 | Formatting buttons (Bold, H1, H2, H3, etc.) only insert raw markdown syntax — no rich text rendering | 🔴 Open |
-| 4 | Bullet list button inserts `"-"` instead of a proper bullet point | 🔴 Open |
-| 5 | Code block button inserts raw ` ``` ` — should wrap selected text in a visible block | 🔴 Open |
-| 6 | Draw tab crashes when first opened | 🟡 Partially fixed |
-| 7 | Bottom nav buttons (⭐ ⭐ 🏷️ 🗑️ ⚙️) are non-functional — only right-click context menu works | 🔴 Open |
-| 8 | Focus mode only hides the formatting bar — doesn't enter true distraction-free mode, and has no proper exit | 🔴 Open |
-| 9 | Canvas pixmap not initialized before first paint event | 🟡 Partially fixed |
+**App Shell**
+- First-launch workspace picker — choose any folder on your machine
+- Workspace is remembered between sessions
+- Dark theme with purple accent (`#c084fc`)
+- Window title updates with current note name
+- Auto-save every 4 seconds
+
+**Sidebar**
+- File tree that reads real folders and `.note` files from disk
+- Create new notes with template picker (Blank, Journal, Meeting, Whiteboard, Table)
+- Create new folders
+- Right-click context menu (open, new note here, new subfolder, delete)
+- Move notes/folders to trash (soft delete — not permanent)
+- Live search across all note content
+- Double-click to open a note
+- ⭐ Favorites, 🏷️ Tags, 🗑️ Trash, ⚙️ Settings panels in bottom nav
+
+**Text Editor**
+- Plain text / Markdown editing
+- Formatting toolbar (Bold, Italic, Strikethrough, H1–H3, Bullet, Numbered, Todo, Code block, Inline code, Divider)
+- Word and character count (live)
+- Focus mode (hides toolbar and sidebar, ESC to exit)
+- Unsaved indicator with auto-save
+
+**Drawing Canvas**
+- Pen, Highlighter, Marker, Eraser tools
+- Shape tools: Rectangle, Ellipse, Line, Arrow
+- Color picker + brush size slider
+- Undo / Redo (50-step history)
+- Clear canvas
+- Export canvas as PNG
+
+**File Formats**
+- `.note` — JSON format storing text blocks and metadata
+- `.board` — JSON format for whiteboard state
+- Templates: Blank, Daily Journal, Meeting Notes, Whiteboard, Table Note
+
+---
+
+## ✅ Current State (v0.2)
+
+### Working
+- [x] Workspace setup and persistence
+- [x] Dark theme, sidebar, folder tree
+- [x] Write / Draw tab switching
+- [x] Drawing canvas — pen, shapes, eraser, color, size
+- [x] Whiteboard opens without crashing
+- [x] Focus mode — enters via button, exits via button or ESC
+- [x] Star notes as favorites (⭐ in right-click menu)
+- [x] Tag notes (🏷️ in right-click menu), remove tags, filter by tag in sidebar
+- [x] Rename notes from right-click menu
+- [x] Inline code button visible in formatting bar
+- [x] Whiteboard zoom (scroll wheel, ＋/－ buttons, 1:1 reset) and pan (middle-mouse or Space+drag)
+- [x] Note open no longer triggers false "Unsaved" or double word count
 
 ---
 
 ## 🔜 What's Coming
 
 ### High Priority
-- [ ] **Inline table editor** — create tables with rich cell types (text, checkbox, dropdown, number), resize columns, add/remove rows
-- [ ] **Table on whiteboard** — drop a table anywhere on the canvas as a floating object
-- [ ] **Whiteboard mode** — infinite panning canvas, zoom, floating text boxes and shapes
-- [ ] **Markdown live preview** — toggle between raw and rendered view
+- [ ] **Markdown live preview** — toggle between raw markdown and rendered view
+- [ ] **Inline table editor** — create tables with rich cell types, resize columns, add/remove rows
+- [ ] **Export to PDF / Markdown** — save notes outside the app
+- [ ] **Version history** — restore older versions of a note
 
 ### Medium Priority
-- [ ] **Tags & labels** — tag notes, filter sidebar by tag
-- [ ] **Favorites** — star notes for quick access
-- [ ] **Trash panel** — browse and restore trashed notes
-- [ ] **Version history** — restore older versions of a note
+- [ ] **Light mode toggle**
 - [ ] **Daily journal mode** — auto-create a note for today on launch
-- [ ] **Rename notes** — inline rename from sidebar
+- [ ] **Trash panel** — browse and restore trashed notes from the sidebar
+- [ ] **Drag and drop** files between folders
 
 ### Lower Priority
-- [ ] **Export to PDF**
-- [ ] **Export to Markdown (.md)**
-- [ ] **Print note**
-- [ ] **Light mode toggle**
 - [ ] **Custom accent colors / themes**
 - [ ] **Font customization** (size, family, line spacing)
-- [ ] **Drag and drop** files between folders
+- [ ] **Print note**
 
 ---
 
@@ -150,7 +167,7 @@ Gensoubook/
   "title": "My Note",
   "created": "2026-03-10T22:56:00",
   "modified": "2026-03-10T22:56:00",
-  "tags": ["journal"],
+  "tags": ["journal", "favorite"],
   "blocks": [
     { "type": "text", "value": "# Hello\n\nThis is my note." }
   ]
@@ -164,8 +181,7 @@ Gensoubook/
   "title": "My Whiteboard",
   "canvas": { "zoom": 1.0, "offset_x": 0, "offset_y": 0 },
   "objects": [
-    { "type": "stroke", "points": [[100, 200]], "color": "#c084fc", "width": 3 },
-    { "type": "table", "x": 300, "y": 200, "columns": ["Task", "Done"], "rows": [["Write README", "✅"]] }
+    { "type": "stroke", "points": [[100, 200]], "color": "#c084fc", "width": 3 }
   ]
 }
 ```
