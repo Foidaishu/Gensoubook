@@ -1,0 +1,35 @@
+# ── Python ──────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+
+# ── Virtual environments ─────────────────────
+venv/
+.venv/
+env/
+.env/
+
+# ── PyInstaller build output ─────────────────
+build/
+dist/
+*.spec
+
+# ── Gensoubook app data ──────────────────────
+.gensoubook/
+.gensoubook_trash/
+
+# ── OS files ────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Editor / IDE ────────────────────────────
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# ── Logs ────────────────────────────────────
+*.log
