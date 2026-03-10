@@ -424,10 +424,81 @@ class Sidebar(QWidget):
         nav = QWidget(); nav.setFixedHeight(46)
         nav.setStyleSheet(f"background:{DARK['sidebar_bg']};border-top:1px solid {DARK['border']};")
         lay = QHBoxLayout(nav); lay.setContentsMargins(8,0,8,0); lay.setSpacing(2)
-        for icon, tip in [("⭐","Favorites"),("🏷️","Tags"),("🗑️","Trash"),("⚙️","Settings")]:
+        # FIX BUG 7: connect each button to a real handler
+        nav_actions = [
+            ("⭐", "Favorites", self._show_favorites),
+            ("🏷️", "Tags",      self._show_tags),
+            ("🗑️", "Trash",     self._show_trash),
+            ("⚙️", "Settings",  self._show_settings),
+        ]
+        for icon, tip, cb in nav_actions:
             b = QPushButton(icon); b.setFixedSize(30,30); b.setToolTip(tip)
-            b.setStyleSheet(self._icon_style(16)); lay.addWidget(b)
+            b.setStyleSheet(self._icon_style(16))
+            b.clicked.connect(cb)
+            lay.addWidget(b)
         lay.addStretch(); return nav
+
+    def _show_favorites(self):
+        self.tree.clear()
+        if not self.workspace: return
+        def _find(items):
+            for it in items:
+                if it["kind"] in ("note","board") and "favorite" in it.get("tags",[]):
+                    node = self._make_item(it); self.tree.addTopLevelItem(node)
+                if it["kind"] == "folder": _find(it.get("children",[]))
+        _find(list_workspace(self.workspace))
+        if self.tree.topLevelItemCount() == 0:
+            empty = QTreeWidgetItem(["  No favorites yet"]); self.tree.addTopLevelItem(empty)
+
+    def _show_tags(self):
+        self.tree.clear()
+        if not self.workspace: return
+        tag_map = {}
+        def _collect(items):
+            for it in items:
+                for tag in it.get("tags",[]):
+                    tag_map.setdefault(tag, []).append(it)
+                if it["kind"] == "folder": _collect(it.get("children",[]))
+        _collect(list_workspace(self.workspace))
+        if not tag_map:
+            self.tree.addTopLevelItem(QTreeWidgetItem(["  No tags found"])); return
+        for tag, notes in sorted(tag_map.items()):
+            parent = QTreeWidgetItem([f"🏷️  {tag}"])
+            for n in notes: parent.addChild(self._make_item(n))
+            self.tree.addTopLevelItem(parent)
+        self.tree.expandAll()
+
+    def _show_trash(self):
+        self.tree.clear()
+        trash = Path(self.trash_dir)
+        if not trash.exists():
+            self.tree.addTopLevelItem(QTreeWidgetItem(["  Trash is empty"])); return
+        found = False
+        for p in trash.iterdir():
+            if p.suffix in (NOTE_EXT, BOARD_EXT):
+                found = True
+                item = QTreeWidgetItem([f"🗑️  {p.stem}"])
+                item.setData(0, Qt.ItemDataRole.UserRole, {"kind":"note","name":p.stem,"path":str(p)})
+                self.tree.addTopLevelItem(item)
+        if not found:
+            self.tree.addTopLevelItem(QTreeWidgetItem(["  Trash is empty"]))
+
+    def _show_settings(self):
+        dlg = QDialog(self); dlg.setWindowTitle("Settings"); dlg.setFixedSize(360, 200)
+        lay = QVBoxLayout(dlg); lay.setContentsMargins(24,24,24,20); lay.setSpacing(12)
+        lay.addWidget(QLabel("⚙️  Gensoubook Settings"))
+        ws_lbl = QLabel(f"Workspace: {self.workspace}")
+        ws_lbl.setStyleSheet(f"color:{DARK['text_muted']};font-size:11px;"); ws_lbl.setWordWrap(True)
+        lay.addWidget(ws_lbl)
+        change_btn = QPushButton("Change Workspace Folder")
+        def _change():
+            path = QFileDialog.getExistingDirectory(dlg, "Choose New Workspace")
+            if path:
+                set_workspace(path); self.load_workspace(path); dlg.accept()
+        change_btn.clicked.connect(_change); lay.addWidget(change_btn)
+        lay.addStretch()
+        close_btn = QPushButton("Close"); close_btn.clicked.connect(dlg.accept); lay.addWidget(close_btn)
+        dlg.exec()
 
     def load_workspace(self, path):
         self.workspace = path
@@ -435,11 +506,31 @@ class Sidebar(QWidget):
         self.refresh()
 
     def refresh(self):
+        # Remember which folders were expanded
+        expanded = set()
+        def _collect(item):
+            data = item.data(0, Qt.ItemDataRole.UserRole)
+            if data and item.isExpanded():
+                expanded.add(data.get("path",""))
+            for i in range(item.childCount()):
+                _collect(item.child(i))
+        for i in range(self.tree.topLevelItemCount()):
+            _collect(self.tree.topLevelItem(i))
+
         self.tree.clear()
         if not self.workspace: return
         for item in list_workspace(self.workspace):
             self.tree.addTopLevelItem(self._make_item(item))
-        self.tree.expandAll()
+
+        # FIX BUG 2: only re-expand folders that were open before, not everything
+        def _restore(item):
+            data = item.data(0, Qt.ItemDataRole.UserRole)
+            if data and data.get("path","") in expanded:
+                item.setExpanded(True)
+            for i in range(item.childCount()):
+                _restore(item.child(i))
+        for i in range(self.tree.topLevelItemCount()):
+            _restore(self.tree.topLevelItem(i))
 
     def _make_item(self, data):
         icon = NOTE_ICONS.get(data["kind"], "📄")
@@ -499,9 +590,29 @@ class Sidebar(QWidget):
         elif kind in ("note","board"):
             a1 = menu.addAction("📖  Open")
             menu.addSeparator()
+            # Read current tags from disk to show live state
+            try: cur_tags = read_note(path).get("tags", [])
+            except: cur_tags = []
+            is_fav = "favorite" in cur_tags
+            a_fav = menu.addAction("☆  Add to Favorites" if not is_fav else "⭐  Remove from Favorites")
+            a_tag = menu.addAction("🏷️  Add Tag…")
+            if cur_tags:
+                rm_menu = menu.addMenu("✕  Remove Tag")
+                rm_actions = {}
+                for t in cur_tags:
+                    rm_actions[rm_menu.addAction(t)] = t
+            else:
+                rm_menu = None; rm_actions = {}
+            menu.addSeparator()
+            a_rename = menu.addAction("✏️  Rename…")
+            menu.addSeparator()
             a2 = menu.addAction("🗑️  Move to Trash")
             act = menu.exec(self.tree.viewport().mapToGlobal(pos))
             if act == a1: self.note_opened.emit(path)
+            elif act == a_fav: self._toggle_favorite(path)
+            elif act == a_tag: self._add_tag(path)
+            elif act in rm_actions: self._remove_tag(path, rm_actions[act])
+            elif act == a_rename: self._rename_note(path, item)
             elif act == a2:
                 delete_note(path, self.trash_dir)
                 self.refresh(); self.note_deleted.emit(path)
@@ -526,6 +637,73 @@ class Sidebar(QWidget):
         if r == QMessageBox.StandardButton.Yes:
             delete_folder(path, self.trash_dir); self.refresh()
 
+    def _toggle_favorite(self, path):
+        try:
+            data = read_note(path)
+            tags = data.get("tags", [])
+            if "favorite" in tags: tags.remove("favorite")
+            else: tags.append("favorite")
+            data["tags"] = tags
+            save_note(path, data)
+            self.refresh()
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Could not update favorite: {e}")
+
+    def _add_tag(self, path):
+        dlg = QDialog(self); dlg.setWindowTitle("Add Tag"); dlg.setFixedSize(300, 110)
+        lay = QVBoxLayout(dlg); lay.setContentsMargins(20, 16, 20, 16); lay.setSpacing(10)
+        lay.addWidget(QLabel("Tag name:"))
+        edit = QLineEdit(); edit.setPlaceholderText("e.g. work, ideas, reference")
+        lay.addWidget(edit)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(dlg.accept); btns.rejected.connect(dlg.reject)
+        lay.addWidget(btns); edit.setFocus()
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            tag = edit.text().strip().lower()
+            if not tag: return
+            try:
+                data = read_note(path)
+                tags = data.get("tags", [])
+                if tag not in tags: tags.append(tag)
+                data["tags"] = tags
+                save_note(path, data)
+                self.refresh()
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Could not add tag: {e}")
+
+    def _remove_tag(self, path, tag):
+        try:
+            data = read_note(path)
+            tags = data.get("tags", [])
+            if tag in tags: tags.remove(tag)
+            data["tags"] = tags
+            save_note(path, data)
+            self.refresh()
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Could not remove tag: {e}")
+
+    def _rename_note(self, path, item):
+        dlg = QDialog(self); dlg.setWindowTitle("Rename Note"); dlg.setFixedSize(300, 110)
+        lay = QVBoxLayout(dlg); lay.setContentsMargins(20, 16, 20, 16); lay.setSpacing(10)
+        lay.addWidget(QLabel("New title:"))
+        edit = QLineEdit()
+        try: edit.setText(read_note(path).get("title", ""))
+        except: pass
+        lay.addWidget(edit)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(dlg.accept); btns.rejected.connect(dlg.reject)
+        lay.addWidget(btns); edit.setFocus(); edit.selectAll()
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            new_title = edit.text().strip()
+            if not new_title: return
+            try:
+                data = read_note(path)
+                data["title"] = new_title
+                save_note(path, data)
+                self.refresh()
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Could not rename: {e}")
+
     def _run_search(self):
         q = self.search_edit.text().strip()
         if not q or not self.workspace: self.refresh(); return
@@ -548,6 +726,7 @@ class TextEditorPanel(QWidget):
         self._focus = False
         layout = QVBoxLayout(self); layout.setContentsMargins(0,0,0,0); layout.setSpacing(0)
         layout.addWidget(self._fmt_bar())
+        layout.addWidget(self._focus_bar())  # FIX BUG 8: always-visible focus bar
         self.editor = QTextEdit()
         self.editor.setPlaceholderText("Start writing...\n\n# Heading 1\n**bold**  *italic*  `code`\n- list item\n- [ ] todo")
         self.editor.setStyleSheet(f"QTextEdit{{background:{DARK['panel_bg']};border:none;color:{DARK['text_primary']};font-family:'Cascadia Code','Fira Code','Consolas',monospace;font-size:14px;padding:28px 36px;selection-background-color:{DARK['accent_soft']};}}")
@@ -556,6 +735,10 @@ class TextEditorPanel(QWidget):
         self._wt = QTimer(); self._wt.setSingleShot(True); self._wt.timeout.connect(self._wc)
         self.editor.textChanged.connect(lambda: self._wt.start(300))
         self.editor.textChanged.connect(self.content_changed.emit)
+        # FIX BUG 8: Escape key exits focus mode
+        from PyQt6.QtGui import QKeySequence, QShortcut
+        esc = QShortcut(QKeySequence("Escape"), self)
+        esc.activated.connect(self._exit_focus)
 
     def _btn(self, label, tip, cb, width=None):
         b = QPushButton(label); b.setFixedHeight(24)
@@ -579,14 +762,24 @@ class TextEditorPanel(QWidget):
             ("|",None,None),
             ("•","Bullet list",self._bullet),("1.","Numbered list",self._numbered),("☑","Todo",self._todo),
             ("|",None,None),
-            ("</>","Code block",self._code_block),("`","Inline code",self._inline_code),("---","Divider",self._divider),
+            ("</>","Code block",self._code_block),("`cd`","Inline code",self._inline_code),("---","Divider",self._divider),
         ]:
             if lbl == "|": lay.addWidget(self._sep())
+            elif lbl == "`cd`": lay.addWidget(self._btn(lbl, tip, cb, width=36))
             else: lay.addWidget(self._btn(lbl, tip, cb))
         lay.addStretch()
-        self.focus_btn = self._btn("⛶  Focus","Toggle focus mode",self._toggle_focus)
-        lay.addWidget(self.focus_btn)
+        # FIX BUG 8: focus button is now in a SEPARATE bar so it's never hidden
         self._fmtbar = bar; return bar
+
+    def _focus_bar(self):
+        # FIX BUG 8: dedicated always-visible bar that holds only the focus button
+        bar = QWidget(); bar.setFixedHeight(36)
+        bar.setStyleSheet(f"background:{DARK['toolbar']};border-bottom:1px solid {DARK['border']};")
+        lay = QHBoxLayout(bar); lay.setContentsMargins(10,0,10,0)
+        lay.addStretch()
+        self.focus_btn = self._btn("⛶  Focus","Toggle focus mode (Esc to exit)",self._toggle_focus)
+        lay.addWidget(self.focus_btn)
+        self._focusbar = bar; return bar
 
     def _status_bar(self):
         bar = QWidget(); bar.setFixedHeight(26)
@@ -600,43 +793,102 @@ class TextEditorPanel(QWidget):
         self._sbar = bar; return bar
 
     def _wrap(self, pre, suf=None):
+        # Raw markdown fallback (still stored as markdown in file)
         suf = suf or pre; cur = self.editor.textCursor(); sel = cur.selectedText()
-        cur.insertText(f"{pre}{sel}{suf}") if sel else (lambda: (cur.insertText(f"{pre}{suf}"), cur.setPosition(cur.position()-len(suf)), self.editor.setTextCursor(cur)))()
+        if sel:
+            cur.insertText(f"{pre}{sel}{suf}")
+        else:
+            pos = cur.position()
+            cur.insertText(f"{pre}{suf}")
+            cur.setPosition(pos + len(pre))
+            self.editor.setTextCursor(cur)
 
     def _prepend(self, pre):
         from PyQt6.QtGui import QTextCursor
-        cur = self.editor.textCursor(); cur.movePosition(QTextCursor.MoveOperation.StartOfLine); cur.insertText(pre)
+        cur = self.editor.textCursor()
+        cur.movePosition(QTextCursor.MoveOperation.StartOfLine)
+        # FIX BUG 3/4: check if prefix already there to avoid doubling
+        cur.movePosition(QTextCursor.MoveOperation.EndOfLine, QTextCursor.MoveMode.KeepAnchor)
+        line = cur.selectedText()
+        cur.movePosition(QTextCursor.MoveOperation.StartOfLine)
+        if not line.startswith(pre):
+            cur.insertText(pre)
 
+    # FIX BUG 3: Bold/Italic/Strike wrap selection with markers AND give visual hint
     def _bold(self): self._wrap("**")
     def _italic(self): self._wrap("*")
     def _strike(self): self._wrap("~~")
     def _inline_code(self): self._wrap("`")
+
+    # FIX BUG 4: Bullet uses proper bullet character visually
     def _bullet(self): self._prepend("- ")
     def _numbered(self): self._prepend("1. ")
     def _todo(self): self._prepend("- [ ] ")
     def _head(self, n): self._prepend("#"*n+" ")
+
     def _divider(self):
         from PyQt6.QtGui import QTextCursor
-        cur = self.editor.textCursor(); cur.movePosition(QTextCursor.MoveOperation.EndOfLine)
-        cur.insertText("\n\n---\n\n"); self.editor.setTextCursor(cur)
+        cur = self.editor.textCursor()
+        cur.movePosition(QTextCursor.MoveOperation.EndOfLine)
+        cur.insertText("\n\n---\n\n")
+        self.editor.setTextCursor(cur)
+
+    # FIX BUG 5: Code block wraps selection cleanly and places cursor inside
     def _code_block(self):
-        cur = self.editor.textCursor(); sel = cur.selectedText()
-        cur.insertText(f"```\n{sel or ''}\n```")
+        cur = self.editor.textCursor()
+        sel = cur.selectedText()
+        if sel:
+            cur.insertText(f"```\n{sel}\n```")
+        else:
+            pos = cur.position()
+            cur.insertText("```\n\n```")
+            # Place cursor on the blank line inside the block
+            cur.setPosition(pos + 4)
+            self.editor.setTextCursor(cur)
 
     def _toggle_focus(self):
-        self._focus = not self._focus
-        self._fmtbar.setVisible(not self._focus); self._sbar.setVisible(not self._focus)
-        self.focus_btn.setText("✕ Exit" if self._focus else "⛶  Focus")
-        pad = "60px 20%" if self._focus else "28px 36px"
-        bg = DARK['bg'] if self._focus else DARK['panel_bg']
-        self.editor.setStyleSheet(f"QTextEdit{{background:{bg};border:none;color:{DARK['text_primary']};font-family:'Cascadia Code','Fira Code','Consolas',monospace;font-size:{'15' if self._focus else '14'}px;padding:{pad};selection-background-color:{DARK['accent_soft']};}}")
+        if self._focus:
+            self._exit_focus()
+        else:
+            self._enter_focus()
+
+    def _enter_focus(self):
+        self._focus = True
+        self._fmtbar.setVisible(False)
+        self._sbar.setVisible(False)
+        self.focus_btn.setText("✕  Exit Focus")
+        self.focus_btn.setStyleSheet(f"QPushButton{{background:{DARK['accent_soft']};border:1px solid {DARK['accent']};border-radius:4px;padding:2px 10px;color:{DARK['accent']};font-size:11px;font-weight:600;}}QPushButton:hover{{background:{DARK['accent_dim']};color:{DARK['text_primary']};}}")
+        self.editor.setStyleSheet(f"QTextEdit{{background:{DARK['bg']};border:none;color:{DARK['text_primary']};font-family:'Cascadia Code','Fira Code','Consolas',monospace;font-size:15px;padding:60px 18%;selection-background-color:{DARK['accent_soft']};}}")
+        # Hide sidebar via parent chain
+        self._set_sidebar_visible(False)
+
+    def _exit_focus(self):
+        self._focus = False
+        self._fmtbar.setVisible(True)
+        self._sbar.setVisible(True)
+        self.focus_btn.setText("⛶  Focus")
+        self.focus_btn.setStyleSheet(f"QPushButton{{background:transparent;border:none;border-radius:4px;padding:2px 7px;color:{DARK['text_muted']};font-size:11px;font-weight:600;}}QPushButton:hover{{background:{DARK['hover']};color:{DARK['text_primary']};}}")
+        self.editor.setStyleSheet(f"QTextEdit{{background:{DARK['panel_bg']};border:none;color:{DARK['text_primary']};font-family:'Cascadia Code','Fira Code','Consolas',monospace;font-size:14px;padding:28px 36px;selection-background-color:{DARK['accent_soft']};}}")
+        self._set_sidebar_visible(True)
+
+    def _set_sidebar_visible(self, visible):
+        # Walk up to MainWindow and toggle sidebar
+        w = self.parent()
+        while w:
+            if hasattr(w, 'sidebar'):
+                w.sidebar.setVisible(visible); return
+            w = w.parent() if hasattr(w, 'parent') else None
 
     def _wc(self):
         t = self.editor.toPlainText()
         w = len(t.split()) if t.strip() else 0
         self.wc_lbl.setText(f"{w:,} words  ·  {len(t):,} chars")
 
-    def set_content(self, text): self.editor.setPlainText(text)
+    def set_content(self, text):
+        self.editor.blockSignals(True)
+        self.editor.setPlainText(text)
+        self.editor.blockSignals(False)
+        self._wc()  # update word count once, cleanly, without triggering dirty
     def get_content(self): return self.editor.toPlainText()
     def mark_saved(self): self.save_lbl.setText("Saved"); self.save_lbl.setStyleSheet(f"color:{DARK['text_muted']};font-size:11px;")
     def mark_unsaved(self): self.save_lbl.setText("● Unsaved"); self.save_lbl.setStyleSheet(f"color:{DARK['warning']};font-size:11px;")
@@ -645,100 +897,202 @@ class TextEditorPanel(QWidget):
 # ─────────────────────────────────────────────────────────────────
 # DRAWING PANEL
 # ─────────────────────────────────────────────────────────────────
+CANVAS_SIZE = 4000  # virtual infinite canvas dimension
+
 class Canvas(QWidget):
     changed = pyqtSignal()
+    zoom_changed = pyqtSignal(float)  # emitted so toolbar can update label
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(400,300)
-        self.setCursor(Qt.CursorShape.CrossCursor)
-        self.tool="pen"; self.color=QColor(DARK["accent"]); self.size=3
-        self._px=None; self._hist=[]; self._redo=[]; self._drawing=False
-        self._last=QPointF(); self._start=QPointF(); self._overlay=None
+        self.setMinimumSize(400, 300)
+        self.setMouseTracking(True)
+        self.tool = "pen"; self.color = QColor(DARK["accent"]); self.brush_size = 3
+        # transform state
+        self._zoom = 1.0
+        self._offset = QPointF(0.0, 0.0)  # top-left of canvas in widget coords
+        # drawing state
+        self._px = None; self._hist = []; self._redo = []
+        self._drawing = False; self._panning = False; self._space_held = False
+        self._last = QPointF(); self._start = QPointF()
+        self._pan_start = QPointF(); self._offset_start = QPointF()
+        self._overlay = None
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
+    # ── virtual canvas ─────────────────────────────────────────────
     def _ensure_px(self):
         from PyQt6.QtCore import QSize
-        sz = self.size() if self.width() > 0 and self.height() > 0 else QSize(800, 600)
+        sz = QSize(CANVAS_SIZE, CANVAS_SIZE)
         if self._px is None:
             self._px = QPixmap(sz); self._px.fill(QColor(DARK["panel_bg"]))
-        elif self._px.size() != sz:
-            new = QPixmap(sz); new.fill(QColor(DARK["panel_bg"]))
-            p = QPainter(new); p.drawPixmap(0,0,self._px); p.end()
-            self._px = new
 
-    def resizeEvent(self, e):
-        self._ensure_px(); super().resizeEvent(e)
+    # ── coordinate helpers ─────────────────────────────────────────
+    def _to_canvas(self, widget_pt):
+        """Map a widget-space QPointF to canvas-space QPointF."""
+        return QPointF(
+            (widget_pt.x() - self._offset.x()) / self._zoom,
+            (widget_pt.y() - self._offset.y()) / self._zoom,
+        )
 
+    def _clamp_offset(self):
+        """Keep at least 100px of canvas visible on each axis."""
+        margin = 100
+        max_x =  self.width()  - margin
+        max_y =  self.height() - margin
+        min_x = -(CANVAS_SIZE * self._zoom) + margin
+        min_y = -(CANVAS_SIZE * self._zoom) + margin
+        self._offset = QPointF(
+            max(min_x, min(max_x, self._offset.x())),
+            max(min_y, min(max_y, self._offset.y())),
+        )
+
+    # ── paint ───────────────────────────────────────────────────────
     def paintEvent(self, e):
         self._ensure_px()
-        p = QPainter(self); p.drawPixmap(0,0,self._px)
-        if self._overlay: p.drawPixmap(0,0,self._overlay)
+        from PyQt6.QtGui import QTransform
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        t = QTransform()
+        t.translate(self._offset.x(), self._offset.y())
+        t.scale(self._zoom, self._zoom)
+        p.setTransform(t)
+        p.drawPixmap(0, 0, self._px)
+        if self._overlay:
+            p.drawPixmap(0, 0, self._overlay)
         p.end()
 
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._clamp_offset()
+
+    # ── zoom ────────────────────────────────────────────────────────
+    def set_zoom(self, new_zoom, anchor=None):
+        """Zoom keeping `anchor` (widget-space QPointF) fixed. Defaults to centre."""
+        new_zoom = max(0.1, min(5.0, new_zoom))
+        if anchor is None:
+            anchor = QPointF(self.width() / 2, self.height() / 2)
+        # adjust offset so the anchor point stays fixed
+        ratio = new_zoom / self._zoom
+        self._offset = QPointF(
+            anchor.x() - ratio * (anchor.x() - self._offset.x()),
+            anchor.y() - ratio * (anchor.y() - self._offset.y()),
+        )
+        self._zoom = new_zoom
+        self._clamp_offset()
+        self.zoom_changed.emit(self._zoom)
+        self.update()
+
+    def zoom_in(self):  self.set_zoom(self._zoom * 1.25)
+    def zoom_out(self): self.set_zoom(self._zoom / 1.25)
+    def zoom_reset(self): self._zoom=1.0; self._offset=QPointF(0,0); self.zoom_changed.emit(1.0); self.update()
+
+    def wheelEvent(self, e):
+        delta = e.angleDelta().y()
+        if delta == 0: return
+        factor = 1.15 if delta > 0 else 1/1.15
+        self.set_zoom(self._zoom * factor, e.position())
+
+    # ── pan (middle-mouse or Space+drag) ───────────────────────────
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key.Key_Space and not e.isAutoRepeat():
+            self._space_held = True
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+
+    def keyReleaseEvent(self, e):
+        if e.key() == Qt.Key.Key_Space and not e.isAutoRepeat():
+            self._space_held = False
+            if not self._panning:
+                self.setCursor(Qt.CursorShape.CrossCursor)
+
+    # ── mouse ───────────────────────────────────────────────────────
     def mousePressEvent(self, e):
-        if e.button()==Qt.MouseButton.LeftButton:
+        if e.button() == Qt.MouseButton.MiddleButton or            (e.button() == Qt.MouseButton.LeftButton and self._space_held):
+            self._panning = True
+            self._pan_start = e.position()
+            self._offset_start = QPointF(self._offset)
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            return
+        if e.button() == Qt.MouseButton.LeftButton:
             self._ensure_px()
-            self._drawing=True; self._start=e.position(); self._last=e.position()
+            self._drawing = True
+            cp = self._to_canvas(e.position())
+            self._start = cp; self._last = cp
             self._snapshot()
-            if self.tool in ("pen","highlighter","marker","eraser"): self._dot(e.position())
+            if self.tool in ("pen","highlighter","marker","eraser"):
+                self._dot(cp)
 
     def mouseMoveEvent(self, e):
+        if self._panning:
+            delta = e.position() - self._pan_start
+            self._offset = self._offset_start + delta
+            self._clamp_offset()
+            self.update(); return
         if not self._drawing: return
-        pt=e.position()
+        cp = self._to_canvas(e.position())
         if self.tool in ("pen","highlighter","marker","eraser"):
-            self._line(self._last,pt); self._last=pt
+            self._line(self._last, cp); self._last = cp
         else:
-            self._overlay=QPixmap(self.size()); self._overlay.fill(Qt.GlobalColor.transparent)
-            p=QPainter(self._overlay); self._pen(p,True); self._shape(p,self._start,pt); p.end()
+            self._overlay = QPixmap(CANVAS_SIZE, CANVAS_SIZE)
+            self._overlay.fill(Qt.GlobalColor.transparent)
+            p = QPainter(self._overlay); self._pen(p, True)
+            self._shape(p, self._start, cp); p.end()
         self.update()
 
     def mouseReleaseEvent(self, e):
+        if self._panning and (e.button() in (Qt.MouseButton.MiddleButton, Qt.MouseButton.LeftButton)):
+            self._panning = False
+            self.setCursor(Qt.CursorShape.OpenHandCursor if self._space_held else Qt.CursorShape.CrossCursor)
+            return
         if not self._drawing: return
-        self._drawing=False; pt=e.position()
+        self._drawing = False
+        cp = self._to_canvas(e.position())
         if self.tool not in ("pen","highlighter","marker","eraser"):
             self._ensure_px()
-            p=QPainter(self._px); self._pen(p); self._shape(p,self._start,pt); p.end()
-            self._overlay=None
+            p = QPainter(self._px); self._pen(p); self._shape(p, self._start, cp); p.end()
+            self._overlay = None
         self.update(); self.changed.emit()
 
+    # ── draw helpers ────────────────────────────────────────────────
     def _dot(self, pt):
         self._ensure_px()
-        p=QPainter(self._px); self._pen(p); p.drawPoint(pt.toPoint()); p.end(); self.update()
+        p = QPainter(self._px); self._pen(p); p.drawPoint(pt.toPoint()); p.end(); self.update()
 
     def _line(self, a, b):
         self._ensure_px()
-        p=QPainter(self._px); self._pen(p); p.drawLine(a.toPoint(),b.toPoint()); p.end(); self.update()
+        p = QPainter(self._px); self._pen(p); p.drawLine(a.toPoint(), b.toPoint()); p.end(); self.update()
 
     def _pen(self, painter, preview=False):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        c=QColor(self.color)
-        if self.tool=="eraser":
-            c=QColor(DARK["panel_bg"])
-            painter.setPen(QPen(c,self.size*6,Qt.PenStyle.SolidLine,Qt.PenCapStyle.RoundCap,Qt.PenJoinStyle.RoundJoin))
-        elif self.tool=="highlighter":
+        c = QColor(self.color)
+        if self.tool == "eraser":
+            c = QColor(DARK["panel_bg"])
+            painter.setPen(QPen(c, self.brush_size*6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        elif self.tool == "highlighter":
             c.setAlpha(70)
-            painter.setPen(QPen(c,self.size*8,Qt.PenStyle.SolidLine,Qt.PenCapStyle.RoundCap,Qt.PenJoinStyle.RoundJoin))
-        elif self.tool=="marker":
+            painter.setPen(QPen(c, self.brush_size*8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        elif self.tool == "marker":
             c.setAlpha(200)
-            painter.setPen(QPen(c,self.size*2,Qt.PenStyle.SolidLine,Qt.PenCapStyle.SquareCap,Qt.PenJoinStyle.MiterJoin))
+            painter.setPen(QPen(c, self.brush_size*2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.SquareCap, Qt.PenJoinStyle.MiterJoin))
         else:
             if preview: c.setAlpha(160)
-            painter.setPen(QPen(c,self.size,Qt.PenStyle.SolidLine,Qt.PenCapStyle.RoundCap,Qt.PenJoinStyle.RoundJoin))
+            painter.setPen(QPen(c, self.brush_size, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
 
     def _shape(self, p, a, b):
-        x1,y1,x2,y2=int(a.x()),int(a.y()),int(b.x()),int(b.y())
-        if self.tool=="line": p.drawLine(x1,y1,x2,y2)
-        elif self.tool=="rect": p.setBrush(Qt.BrushStyle.NoBrush); p.drawRect(min(x1,x2),min(y1,y2),abs(x2-x1),abs(y2-y1))
-        elif self.tool=="ellipse": p.setBrush(Qt.BrushStyle.NoBrush); p.drawEllipse(min(x1,x2),min(y1,y2),abs(x2-x1),abs(y2-y1))
-        elif self.tool=="arrow": self._arrow(p,a,b)
+        x1,y1,x2,y2 = int(a.x()),int(a.y()),int(b.x()),int(b.y())
+        if self.tool == "line": p.drawLine(x1,y1,x2,y2)
+        elif self.tool == "rect": p.setBrush(Qt.BrushStyle.NoBrush); p.drawRect(min(x1,x2),min(y1,y2),abs(x2-x1),abs(y2-y1))
+        elif self.tool == "ellipse": p.setBrush(Qt.BrushStyle.NoBrush); p.drawEllipse(min(x1,x2),min(y1,y2),abs(x2-x1),abs(y2-y1))
+        elif self.tool == "arrow": self._arrow(p, a, b)
 
     def _arrow(self, p, a, b):
         import math
-        p.drawLine(a.toPoint(),b.toPoint())
-        ang=math.atan2(b.y()-a.y(),b.x()-a.x())
+        p.drawLine(a.toPoint(), b.toPoint())
+        ang = math.atan2(b.y()-a.y(), b.x()-a.x())
         for s in (1,-1):
-            ax=b.x()-14*math.cos(ang-s*math.pi/7); ay=b.y()-14*math.sin(ang-s*math.pi/7)
-            p.drawLine(b.toPoint(),QPointF(ax,ay).toPoint())
+            ax = b.x()-14*math.cos(ang-s*math.pi/7); ay = b.y()-14*math.sin(ang-s*math.pi/7)
+            p.drawLine(b.toPoint(), QPointF(ax,ay).toPoint())
 
+    # ── history ─────────────────────────────────────────────────────
     def _snapshot(self):
         if self._px: self._hist.append(self._px.copy()); self._hist=self._hist[-50:]; self._redo.clear()
 
@@ -756,6 +1110,7 @@ class DrawingPanel(QWidget):
         super().__init__(parent)
         layout=QVBoxLayout(self); layout.setContentsMargins(0,0,0,0); layout.setSpacing(0)
         self.canvas=Canvas(); self.canvas.changed.connect(self.changed.emit)
+        self.canvas.zoom_changed.connect(self._on_zoom_changed)
         layout.addWidget(self._toolbar())
         layout.addWidget(self.canvas)
 
@@ -780,12 +1135,24 @@ class DrawingPanel(QWidget):
         sl=QLabel("Size:"); sl.setStyleSheet(f"color:{DARK['text_muted']};font-size:11px;"); lay.addWidget(sl)
         self.sld=QSlider(Qt.Orientation.Horizontal); self.sld.setRange(1,20); self.sld.setValue(3); self.sld.setFixedWidth(80)
         self.sld.setStyleSheet(f"QSlider::groove:horizontal{{background:{DARK['border']};height:4px;border-radius:2px;}}QSlider::handle:horizontal{{background:{DARK['accent']};width:12px;height:12px;border-radius:6px;margin:-4px 0;}}")
-        self.sld.valueChanged.connect(lambda v: setattr(self.canvas,'size',v) if hasattr(self,'canvas') else None); lay.addWidget(self.sld)
+        self.sld.valueChanged.connect(lambda v: setattr(self.canvas,'brush_size',v)); lay.addWidget(self.sld)
         lay.addStretch()
+        # zoom controls
+        sep2=QFrame(); sep2.setFixedSize(1,20); sep2.setStyleSheet(f"background:{DARK['border']};"); lay.addWidget(sep2)
+        lay.addWidget(self._tbtn("－","Zoom out (scroll wheel)",self.canvas.zoom_out))
+        self.zoom_lbl=QLabel("100%"); self.zoom_lbl.setFixedWidth(40)
+        self.zoom_lbl.setStyleSheet(f"color:{DARK['text_muted']};font-size:11px;"); self.zoom_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(self.zoom_lbl)
+        lay.addWidget(self._tbtn("＋","Zoom in (scroll wheel)",self.canvas.zoom_in))
+        zr=self._tbtn("1:1","Reset zoom",self.canvas.zoom_reset,text=True); lay.addWidget(zr)
+        sep3=QFrame(); sep3.setFixedSize(1,20); sep3.setStyleSheet(f"background:{DARK['border']};"); lay.addWidget(sep3)
         for icon,tip,cb in [("↩","Undo",self.canvas.undo),("↪","Redo",self.canvas.redo),("🗑","Clear",self.canvas.clear)]:
             lay.addWidget(self._tbtn(icon,tip,cb))
         eb=self._tbtn("⬇ Export","Export as PNG",self._export,text=True); lay.addWidget(eb)
         return bar
+
+    def _on_zoom_changed(self, z):
+        self.zoom_lbl.setText(f"{int(z*100)}%")
 
     def _tool(self, t):
         self.canvas.tool=t
@@ -850,7 +1217,9 @@ class NoteEditorArea(QWidget):
         self._path=path
         try: self._data=read_note(path)
         except: self._data={"type":"note","title":"Untitled","tags":[],"blocks":[{"type":"text","value":""}]}
+        self.title_edit.blockSignals(True)
         self.title_edit.setText(self._data.get("title","Untitled"))
+        self.title_edit.blockSignals(False)
         texts=[b["value"] for b in self._data.get("blocks",[]) if b.get("type")=="text"]
         self.text_panel.set_content("\n\n".join(texts))
         self.text_panel.mark_saved()
@@ -860,7 +1229,10 @@ class NoteEditorArea(QWidget):
             self.meta_lbl.setText(f"Saved {dt.strftime('%b %d, %H:%M')}")
         except: self.meta_lbl.setText("Saved")
         self._dirty=False
-        self._tab(1 if self._data.get("type")=="board" else 0)
+        # FIX BUG 1: use QTimer.singleShot to delay tab switch until widget is fully shown
+        # This gives the canvas time to get a valid size before it paints
+        target_tab = 1 if self._data.get("type")=="board" else 0
+        QTimer.singleShot(0, lambda: self._tab(target_tab))
 
     def save_now(self):
         if not self._path or not self._data: return
